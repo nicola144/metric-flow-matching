@@ -92,6 +92,12 @@ def datasets_parser(parser):
         default=True,
         help="Whiten the data",
     )
+    parser.add_argument(
+        "--num_points",
+        type=int,
+        default=5000,
+        help="Number of data points to generate for synthetic datasets",
+    )
     return parser
 
 
@@ -212,7 +218,25 @@ def general_training_parser(parser):
         default=[0.9, 0.1],
         help="Split ratios for training/validation data in CFM training",
     )
-    parser.add_argument("--epochs", type=int, default=1000, help="Number of epochs")
+    parser.add_argument("--epochs", type=int, default=1000, help="Number of epochs (fallback if specific not provided)")
+    parser.add_argument(
+        "--geopath_epochs",
+        type=int,
+        default=None,
+        help="Number of epochs for GeoPath training (overrides --epochs if set)",
+    )
+    parser.add_argument(
+        "--flow_epochs",
+        type=int,
+        default=None,
+        help="Number of epochs for Flow/CFM training (overrides --epochs if set)",
+    )
+    parser.add_argument(
+        "--vis_interval_flow",
+        type=int,
+        default=50,
+        help="Visualization interval (in epochs) during flow training",
+    )
     parser.add_argument(
         "--accelerator", type=str, default="cpu", help="Training accelerator"
     )
@@ -293,6 +317,18 @@ def geopath_network_parser(parser):
         type=float,
         default=0.0,
         help="Dropout for UNet",
+    )
+    parser.add_argument(
+        "--skip_geopath_initial_loss",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Skip expensive initial reference loss computation for GeoPath",
+    )
+    parser.add_argument(
+        "--geopath_initial_batches",
+        type=int,
+        default=0,
+        help="If >0, limit initial reference loss to this many batches",
     )
     return parser
 

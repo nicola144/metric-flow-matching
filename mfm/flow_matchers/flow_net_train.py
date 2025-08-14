@@ -65,7 +65,9 @@ class FlowNetTrainBase(pl.LightningModule):
         t_start = self.timesteps[0]
 
         for i, (x0, x1) in enumerate(zip(x0s, x1s)):
-            x0, x1 = torch.squeeze(x0), torch.squeeze(x1)
+            # Don't squeeze the feature dimension for 1D data
+            x0 = torch.squeeze(x0, dim=0) if x0.dim() > 2 else x0
+            x1 = torch.squeeze(x1, dim=0) if x1.dim() > 2 else x1
 
             if self.ot_sampler is not None:
                 x0, x1 = self.ot_sampler.sample_plan(

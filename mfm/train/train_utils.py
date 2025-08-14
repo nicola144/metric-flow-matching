@@ -46,6 +46,10 @@ def dataset_name2datapath(dataset_name, working_dir):
         return os.path.join(working_dir, "data", "afhq")
     elif dataset_name == "celeba":
         return os.path.join(working_dir, "data", "celeba")
+    elif dataset_name == "gaussian":
+        return None
+    elif dataset_name == "knot":
+        return None  # gaussian is synthetic, no file needed
     else:
         raise ValueError("Dataset not recognized")
 

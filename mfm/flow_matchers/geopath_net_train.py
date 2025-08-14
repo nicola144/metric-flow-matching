@@ -35,7 +35,31 @@ class GeoPathNetTrain(pl.LightningModule):
         return self.geopath_net(x0, x1, t)
 
     def on_train_start(self):
-        self.first_loss = self.compute_initial_loss()
+        if getattr(self.args, 'skip_geopath_initial_loss', False):
+            self.first_loss = 1.0
+            # Initialize timesteps minimally to avoid None during training
+            self.timesteps = torch.linspace(
+                0.0,
+                1.0,
+                self.trainer.datamodule.num_timesteps,
+            )
+        else:
+            self.first_loss = self.compute_initial_loss()
+
+    def on_validation_start(self):
+        # Ensure validation has t samples even if initial reference loss was skipped
+        if not hasattr(self, 't_val') or self.t_val is None or len(self.t_val) == 0:
+            with torch.enable_grad():
+                self.t_val = []
+                for _ in range(
+                    self.trainer.datamodule.num_timesteps - len(self.skipped_time_points)
+                ):
+                    self.t_val.append(
+                        torch.rand(
+                            self.trainer.datamodule.batch_size * self.multiply_validation,
+                            requires_grad=True,
+                        )
+                    )
 
     def compute_initial_loss(self):
         self.geopath_net.train(mode=False)
@@ -56,7 +80,8 @@ class GeoPathNetTrain(pl.LightningModule):
         with torch.no_grad():
             old_alpha = self.flow_matcher.alpha
             self.flow_matcher.alpha = 0
-            for batch in self.trainer.datamodule.train_dataloader():
+            max_batches = getattr(self.args, 'geopath_initial_batches', 0)
+            for bi, batch in enumerate(self.trainer.datamodule.train_dataloader()):
                 self.timesteps = torch.linspace(
                     0.0, 1.0, len(batch[0]["train_samples"][0])
                 )
@@ -66,6 +91,8 @@ class GeoPathNetTrain(pl.LightningModule):
                 )
                 total_loss += loss.item()
                 total_count += 1
+                if max_batches and bi + 1 >= max_batches:
+                    break
             self.flow_matcher.alpha = old_alpha
         self.computing_reference_loss = False
         self.geopath_net.train(mode=True)
@@ -113,7 +140,9 @@ class GeoPathNetTrain(pl.LightningModule):
         i_start = 0
 
         for i, (x0, x1) in enumerate(zip(x0s, x1s)):
-            x0, x1 = torch.squeeze(x0), torch.squeeze(x1)
+            # Don't squeeze the feature dimension for 1D data
+            x0 = torch.squeeze(x0, dim=0) if x0.dim() > 2 else x0
+            x1 = torch.squeeze(x1, dim=0) if x1.dim() > 2 else x1
             if self.trainer.validating or self.computing_reference_loss:
                 repeat_tuple = (self.multiply_validation, 1) + (1,) * (
                     len(x0.shape) - 2

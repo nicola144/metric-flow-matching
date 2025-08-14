@@ -17,6 +17,7 @@ class TemporalDataModule(pl.LightningDataModule):
         super().__init__()
         self.save_hyperparameters()
 
+        self.args = args  # Store args for access in _prepare_data
         self.data_type = args.data_type
         self.data_path = args.data_path
         self.batch_size = args.batch_size
@@ -39,6 +40,12 @@ class TemporalDataModule(pl.LightningDataModule):
             )
         elif self.data_type == "arch":
             ds, labels, unique_labels = generate_arch_data()
+        elif self.data_type == "gaussian":
+            num_points = getattr(self.args, 'num_points', 5000)
+            ds, labels, unique_labels = generate_gaussian_data(num_points=num_points)
+        elif self.data_type == "knot":
+            num_points = getattr(self.args, 'num_points', 5000)
+            ds, labels, unique_labels = generate_knot_data(num_points=num_points)
         elif self.data_type == "sphere":
             ds, labels, unique_labels = generate_sphere_data()
         else:
@@ -212,6 +219,99 @@ def generate_arch_data(num_points: int = 5000):
     labels = np.array([0] * num_points + [1] * num_points + [2] * num_points)
 
     # Returning the dataset, labels, and unique labels
+    unique_labels = np.unique(labels)
+    return points, labels, unique_labels
+
+
+def x_fun(t, std):
+    t = 3 * (t / t.max()) - 1.5
+    size = t.shape[0]
+    assert size % 3 == 0
+
+    t1, t2, t3 = t[:size // 3], t[size // 3:-size // 3], t[-size // 3:]
+
+    x1 = 3 * (t1 + 0.5)
+    x2 = np.cos(2 * np.pi * (t2 - 0.75))
+    x3 = 3 * (t3 - 0.5)
+
+    x = np.concatenate([x1, x2, x3])
+    return x + np.random.randn(*x.shape) * std 
+
+
+def y_fun(t, std):
+    t = 3 * (t / t.max()) - 1.5
+    size = t.shape[0]
+    assert size % 3 == 0
+
+    t1, t2, t3 = t[:size // 3], t[size // 3:-size // 3], t[-size // 3:]
+    y1 = - np.tanh(5 * (t1 + 1)) / 2 + 0.5
+    y2 = np.sin(2 * np.pi * (t2 - 0.75)) + 1
+    y3 = np.tanh(5 * (t3 - 1)) / 2 + 0.5
+
+    y = np.concatenate([y1, y2, y3])
+    return y + np.random.randn(*y.shape) * std
+
+def loop_distribution(size, std):
+    assert size % 3 == 0
+    t = np.linspace(0, 3, size)
+    xt = np.stack([x_fun(t, std), y_fun(t, std)]).T
+    x0 = np.random.randn(2, size).T * std + np.array([-3, 1])
+    x1 = np.random.randn(2, size).T * std + np.array([3, 1])
+    return x0, xt, x1, t / 3
+
+
+def generate_knot_data(num_points:int=5000):
+    """Generate synthetic knot data in the format expected by MFM."""
+    
+    # Ensure num_points is divisible by 3
+    if num_points % 3 != 0:
+        num_points = ((num_points // 3) + 1) * 3
+    
+    X0, Xt, X1, times = loop_distribution(num_points, std=0.1)
+    
+    # Create points and labels in the same format as arch_data
+    points_0 = X0  # t=0 data
+    points_1 = Xt  # t=0.5 data (knot trajectory)
+    points_2 = X1  # t=1 data
+    
+    # Combine all points
+    points = np.concatenate([points_0, points_1, points_2])
+    labels = np.array([0] * num_points + [1] * num_points + [2] * num_points)
+    
+    unique_labels = np.unique(labels)
+    return points, labels, unique_labels
+
+
+def generate_gaussian_data(num_points: int = 5000):
+    """Generate 1D Gaussian synthetic data at 3 timesteps with mixture at t=0.5."""
+    
+    # Time 0: Single Gaussian centered at -2
+    x_0 = np.random.normal(0., 0.3, num_points)
+    
+    # Time 2: Single Gaussian centered at 2  
+    x_2 = np.random.normal(0., 0.3, num_points)
+    
+    # Time 1 (t=0.5)
+    n_per_component = num_points // 3
+    remaining = num_points - 3 * n_per_component
+    
+    # Three Gaussian components at different locations
+    component_1 = np.random.normal(-1.5, 0.2, n_per_component)  # Left component
+    component_2 = np.random.normal(0.0, 0.2, n_per_component)   # Center component  
+    component_3 = np.random.normal(1.5, 0.2, n_per_component + remaining)  # Right component
+    
+    # Combine the three components
+    x_1 = np.concatenate([component_1, component_2, component_3])
+    np.random.shuffle(x_1)
+    
+    # Combine points as 1D data (reshape to column vector)
+    points_0 = x_0.reshape(-1, 1)
+    points_1 = x_1.reshape(-1, 1)
+    points_2 = x_2.reshape(-1, 1)
+    
+    points = np.concatenate([points_0, points_1, points_2])
+    labels = np.array([0] * num_points + [1] * num_points + [2] * num_points)
+    
     unique_labels = np.unique(labels)
     return points, labels, unique_labels
 
