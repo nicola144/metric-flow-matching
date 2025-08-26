@@ -42,10 +42,20 @@ class TemporalDataModule(pl.LightningDataModule):
             ds, labels, unique_labels = generate_arch_data()
         elif self.data_type == "gaussian":
             num_points = getattr(self.args, 'num_points', 5000)
-            ds, labels, unique_labels = generate_gaussian_data(num_points=num_points)
+            time_points = getattr(self.args, 'time_points', None)
+            # Convert integer time_points to linspace
+            if isinstance(time_points, int):
+                import numpy as np
+                time_points = np.linspace(0, 1, time_points).tolist()
+            ds, labels, unique_labels = generate_gaussian_data(num_points=num_points, time_points=time_points)
         elif self.data_type == "knot":
             num_points = getattr(self.args, 'num_points', 5000)
-            ds, labels, unique_labels = generate_knot_data(num_points=num_points)
+            time_points = getattr(self.args, 'time_points', None)
+            # Convert integer time_points to linspace
+            if isinstance(time_points, int):
+                import numpy as np
+                time_points = np.linspace(0, 1, time_points).tolist()
+            ds, labels, unique_labels = generate_knot_data(num_points=num_points, time_points=time_points)
         elif self.data_type == "sphere":
             ds, labels, unique_labels = generate_sphere_data()
         else:
@@ -223,6 +233,56 @@ def generate_arch_data(num_points: int = 5000):
     return points, labels, unique_labels
 
 
+def x_fun_partial(t_param, std):
+    """Generate x coordinates for knot trajectory.
+    
+    Args:
+        t_param: Parameter values in range [0, 3] 
+        std: noise standard deviation
+    """
+    x_vals = []
+    
+    for t in t_param:
+        if t <= 1:
+            # First segment: linear
+            x = 3 * (t - 0.5)
+        elif t <= 2:
+            # Second segment: cosine loop
+            x = np.cos(2 * np.pi * (t - 1.75))
+        else:
+            # Third segment: linear
+            x = 3 * (t - 2.5)
+        x_vals.append(x)
+    
+    x_vals = np.array(x_vals)
+    return x_vals + np.random.randn(*x_vals.shape) * std
+
+
+def y_fun_partial(t_param, std):
+    """Generate y coordinates for knot trajectory.
+    
+    Args:
+        t_param: Parameter values in range [0, 3]
+        std: noise standard deviation
+    """
+    y_vals = []
+    
+    for t in t_param:
+        if t <= 1:
+            # First segment: tanh curve
+            y = -np.tanh(5 * (t - 0.5)) / 2 + 0.5
+        elif t <= 2:
+            # Second segment: sine loop
+            y = np.sin(2 * np.pi * (t - 1.75)) + 1
+        else:
+            # Third segment: tanh curve
+            y = np.tanh(5 * (t - 2.5)) / 2 + 0.5
+        y_vals.append(y)
+    
+    y_vals = np.array(y_vals)
+    return y_vals + np.random.randn(*y_vals.shape) * std
+
+
 def x_fun(t, std):
     t = 3 * (t / t.max()) - 1.5
     size = t.shape[0]
@@ -260,59 +320,148 @@ def loop_distribution(size, std):
     return x0, xt, x1, t / 3
 
 
-def generate_knot_data(num_points:int=5000):
-    """Generate synthetic knot data in the format expected by MFM."""
+def generate_knot_data(num_points:int=5000, time_points: list = None):
+    """Generate synthetic knot data at specified timesteps.
     
-    # Ensure num_points is divisible by 3
-    if num_points % 3 != 0:
-        num_points = ((num_points // 3) + 1) * 3
+    Args:
+        num_points: Number of points per timestep
+        time_points: List of time values (default: [0, 0.5, 1.0])
+    """
+    if time_points is None:
+        time_points = [0.0, 0.5, 1.0]
     
-    X0, Xt, X1, times = loop_distribution(num_points, std=0.1)
+    # For the full trajectory, we need more points to sample from
+    trajectory_points = max(10000, num_points * 3)
+    if trajectory_points % 3 != 0:
+        trajectory_points = ((trajectory_points // 3) + 1) * 3
     
-    # Create points and labels in the same format as arch_data
-    points_0 = X0  # t=0 data
-    points_1 = Xt  # t=0.5 data (knot trajectory)
-    points_2 = X1  # t=1 data
+    # Generate the full knot trajectory with many points
+    X0_full, Xt_full, X1_full, t_params = loop_distribution(trajectory_points, std=0.0)
     
-    # Combine all points
-    points = np.concatenate([points_0, points_1, points_2])
-    labels = np.array([0] * num_points + [1] * num_points + [2] * num_points)
+    all_points = []
+    all_labels = []
     
+    for i, t in enumerate(time_points):
+        if t == 0.0:
+            # Start distribution: sample from X0
+            indices = np.random.choice(len(X0_full), size=num_points, replace=False)
+            points = X0_full[indices] + np.random.randn(num_points, 2) * 0.1
+        elif t == 1.0 and len(time_points) > 2:
+            # For t=1.0, we want the final segment of the trajectory, not just the end distribution
+            # This connects the last intermediate time to the end
+            prev_t = time_points[-2]  # Get the time point before 1.0
+            
+            # Sample from the final segment [prev_t, 1.0]
+            mask = (t_params > prev_t) & (t_params <= t)
+            valid_indices = np.where(mask)[0]
+            
+            if len(valid_indices) >= num_points:
+                indices = np.random.choice(valid_indices, size=num_points, replace=False)
+            else:
+                indices = np.random.choice(valid_indices, size=num_points, replace=True)
+            
+            points = Xt_full[indices] + np.random.randn(num_points, 2) * 0.1
+        elif t == 1.0:
+            # Fallback for when we only have start and end (no intermediate points)
+            indices = np.random.choice(len(X1_full), size=num_points, replace=False)
+            points = X1_full[indices] + np.random.randn(num_points, 2) * 0.1
+        else:
+            # Intermediate time: sample from a specific segment of the trajectory
+            # We want non-overlapping segments for each time point
+            
+            # Find the previous time point
+            prev_t = 0.0
+            for j in range(i):
+                if time_points[j] < t:
+                    prev_t = time_points[j]
+            
+            # Sample from the segment [prev_t, t]
+            mask = (t_params > prev_t) & (t_params <= t)
+            valid_indices = np.where(mask)[0]
+            
+            if len(valid_indices) == 0:
+                # Fallback: if no points in range, sample around t
+                center_idx = int(t * len(t_params))
+                valid_indices = np.arange(max(0, center_idx - 100), min(len(t_params), center_idx + 100))
+            
+            if len(valid_indices) >= num_points:
+                # Sample without replacement if we have enough points
+                indices = np.random.choice(valid_indices, size=num_points, replace=False)
+            else:
+                # Sample with replacement if we don't have enough
+                indices = np.random.choice(valid_indices, size=num_points, replace=True)
+            
+            points = Xt_full[indices] + np.random.randn(num_points, 2) * 0.1
+        
+        all_points.append(points)
+        all_labels.extend([i] * num_points)
+    
+    points = np.concatenate(all_points)
+    labels = np.array(all_labels)
     unique_labels = np.unique(labels)
+    
     return points, labels, unique_labels
 
 
-def generate_gaussian_data(num_points: int = 5000):
-    """Generate 1D Gaussian synthetic data at 3 timesteps with mixture at t=0.5."""
+def generate_gaussian_data(num_points: int = 5000, time_points: list = None):
+    """Generate 1D Gaussian synthetic data at specified timesteps.
     
-    # Time 0: Single Gaussian centered at -2
-    x_0 = np.random.normal(0., 0.3, num_points)
+    Args:
+        num_points: Number of points per timestep
+        time_points: List of time values (default: [0, 0.5, 1.0])
+    """
+    if time_points is None:
+        time_points = [0.0, 0.5, 1.0]
     
-    # Time 2: Single Gaussian centered at 2  
-    x_2 = np.random.normal(0., 0.3, num_points)
+    n_times = len(time_points)
+    all_points = []
+    all_labels = []
     
-    # Time 1 (t=0.5)
-    n_per_component = num_points // 3
-    remaining = num_points - 3 * n_per_component
+    for i, t in enumerate(time_points):
+        if t == 0.0:
+            # Time 0: Single Gaussian centered at 0
+            x = np.random.normal(0., 0.3, num_points)
+        elif t == 1.0:
+            # Time 1: Single Gaussian centered at 0
+            x = np.random.normal(0., 0.3, num_points)
+        else:
+            # Intermediate times: progressively split into multiple Gaussians
+            if t <= 0.5:
+                # From t=0 to t=0.5: progressively split from 1 to 3 Gaussians
+                split_factor = t / 0.5  # 0 to 1 as t goes from 0 to 0.5
+                n_per_component = num_points // 3
+                remaining = num_points - 3 * n_per_component
+                
+                # Three Gaussian components that spread apart
+                spread = 1.5 * split_factor
+                component_1 = np.random.normal(-spread, 0.2 + 0.1*(1-split_factor), n_per_component)
+                component_2 = np.random.normal(0.0, 0.2 + 0.1*(1-split_factor), n_per_component)
+                component_3 = np.random.normal(spread, 0.2 + 0.1*(1-split_factor), n_per_component + remaining)
+                
+                x = np.concatenate([component_1, component_2, component_3])
+            else:
+                # From t=0.5 to t=1: progressively merge from 3 to 1 Gaussian
+                merge_factor = (t - 0.5) / 0.5  # 0 to 1 as t goes from 0.5 to 1
+                n_per_component = num_points // 3
+                remaining = num_points - 3 * n_per_component
+                
+                # Three components that merge together
+                spread = 1.5 * (1 - merge_factor)
+                component_1 = np.random.normal(-spread, 0.2 + 0.1*merge_factor, n_per_component)
+                component_2 = np.random.normal(0.0, 0.2 + 0.1*merge_factor, n_per_component)
+                component_3 = np.random.normal(spread, 0.2 + 0.1*merge_factor, n_per_component + remaining)
+                
+                x = np.concatenate([component_1, component_2, component_3])
+            np.random.shuffle(x)
+        
+        points = x.reshape(-1, 1)
+        all_points.append(points)
+        all_labels.extend([i] * num_points)
     
-    # Three Gaussian components at different locations
-    component_1 = np.random.normal(-1.5, 0.2, n_per_component)  # Left component
-    component_2 = np.random.normal(0.0, 0.2, n_per_component)   # Center component  
-    component_3 = np.random.normal(1.5, 0.2, n_per_component + remaining)  # Right component
-    
-    # Combine the three components
-    x_1 = np.concatenate([component_1, component_2, component_3])
-    np.random.shuffle(x_1)
-    
-    # Combine points as 1D data (reshape to column vector)
-    points_0 = x_0.reshape(-1, 1)
-    points_1 = x_1.reshape(-1, 1)
-    points_2 = x_2.reshape(-1, 1)
-    
-    points = np.concatenate([points_0, points_1, points_2])
-    labels = np.array([0] * num_points + [1] * num_points + [2] * num_points)
-    
+    points = np.concatenate(all_points)
+    labels = np.array(all_labels)
     unique_labels = np.unique(labels)
+    
     return points, labels, unique_labels
 
 

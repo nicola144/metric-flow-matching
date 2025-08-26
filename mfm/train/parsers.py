@@ -98,6 +98,13 @@ def datasets_parser(parser):
         default=5000,
         help="Number of data points to generate for synthetic datasets",
     )
+    parser.add_argument(
+        "--time_points",
+        nargs="+",
+        type=float,
+        default=[0.0, 0.5, 1.0],
+        help="Time points for data generation (e.g., [0.0, 0.25, 0.5, 0.75, 1.0])",
+    )
     return parser
 
 
